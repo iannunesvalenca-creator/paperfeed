@@ -1,0 +1,77 @@
+sources:
+  pubmed: true
+  biorxiv: true
+  arxiv:
+    enabled: true
+    categories:
+      - cs.AI
+      - cs.LG
+      - q-bio.GN
+      - q-bio.QM
+
+collection:
+  lookback_days: 7
+
+areas:
+  metagenomics:
+    terms:
+      - metagenomics
+      - metagenomic
+      - microbiome
+      - 16S rRNA
+      - shotgun sequencing
+    weight: 1.0
+
+  viruses_outbreaks:
+    terms:
+      - virus
+      - viral
+      - virology
+      - outbreak
+      - epidemic
+      - pandemic
+      - emerging infectious
+    weight: 1.0
+
+  ngs:
+    terms:
+      - next generation sequencing
+      - NGS
+      - illumina
+      - nanopore
+      - sequencing depth
+      - long-read sequencing
+    weight: 1.0
+
+  ai_ml:
+    terms:
+      - machine learning
+      - deep learning
+      - artificial intelligence
+      - neural network
+      - random forest
+      - transformer
+      - large language model
+    weight: 0.9
+
+  human_genome:
+    terms:
+      - human genome
+      - exome
+      - whole genome sequencing
+      - WGS
+      - rare disease
+      - genetic variant
+      - GWAS
+    weight: 0.8
+
+  bioinformatics:
+    terms:
+      - bioinformatics
+      - computational biology
+      - pipeline
+      - workflow
+      - sequence alignment
+
+scoring:
+  title_multiplier: 2.0
