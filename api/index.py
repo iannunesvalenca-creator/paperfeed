@@ -301,133 +301,324 @@ HTML_TEMPLATE = """
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>PaperFeed</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&display=swap" rel="stylesheet">
     <style>
         :root {
-            --bg: #fafafa;
-            --card: #ffffff;
-            --text: #1a1a1a;
-            --muted: #666;
-            --border: #e0e0e0;
-            --accent: #2563eb;
-            --score: #16a34a;
+            --bg: #0d1117;
+            --bg-secondary: #161b22;
+            --card: #1c2128;
+            --card-hover: #242c38;
+            --border: #30363d;
+            --text: #e6edf3;
+            --text-secondary: #8b949e;
+            --text-muted: #6e7681;
+            --accent: #58a6ff;
+            --accent-hover: #79b8ff;
+
+            /* Area colors */
+            --area-metagenomics: #3fb950;
+            --area-viruses: #f85149;
+            --area-ngs: #a371f7;
+            --area-ai: #79c0ff;
+            --area-genome: #ffa657;
+            --area-bioinfo: #ff7b72;
+
+            /* Source colors */
+            --pubmed: #4493f8;
+            --biorxiv: #da3b01;
+            --arxiv: #b31b1b;
         }
+
         * { box-sizing: border-box; margin: 0; padding: 0; }
+
         body {
-            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+            font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
             background: var(--bg);
             color: var(--text);
-            line-height: 1.5;
+            line-height: 1.6;
             font-size: 14px;
+            min-height: 100vh;
         }
-        .container { max-width: 900px; margin: 0 auto; padding: 1rem; }
+
+        .container {
+            max-width: 1000px;
+            margin: 0 auto;
+            padding: 1.5rem;
+        }
+
         header {
             display: flex;
             justify-content: space-between;
             align-items: center;
-            padding: 1rem 0;
+            padding: 1.5rem 0;
+            margin-bottom: 1.5rem;
             border-bottom: 1px solid var(--border);
-            margin-bottom: 1rem;
-            flex-wrap: wrap;
-            gap: 0.5rem;
         }
-        header h1 { font-size: 1.5rem; font-weight: 600; }
-        .stats { font-size: 0.85rem; color: var(--muted); }
+
+        .logo {
+            display: flex;
+            align-items: center;
+            gap: 0.75rem;
+        }
+
+        .logo-icon {
+            width: 36px;
+            height: 36px;
+            background: linear-gradient(135deg, var(--accent), #a371f7);
+            border-radius: 8px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 1.25rem;
+        }
+
+        header h1 {
+            font-size: 1.5rem;
+            font-weight: 600;
+            background: linear-gradient(135deg, var(--text), var(--accent));
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+            background-clip: text;
+        }
+
+        .stats {
+            font-size: 0.9rem;
+            color: var(--text-secondary);
+            background: var(--bg-secondary);
+            padding: 0.5rem 1rem;
+            border-radius: 20px;
+            border: 1px solid var(--border);
+        }
+
         .controls {
             display: flex;
-            gap: 0.5rem;
+            gap: 0.75rem;
             flex-wrap: wrap;
-            margin-bottom: 1rem;
-            align-items: center;
-        }
-        select, button {
-            padding: 0.5rem 0.75rem;
+            margin-bottom: 1.5rem;
+            padding: 1rem;
+            background: var(--bg-secondary);
+            border-radius: 12px;
             border: 1px solid var(--border);
-            border-radius: 4px;
-            font-size: 0.85rem;
+        }
+
+        select {
+            padding: 0.6rem 1rem;
+            border: 1px solid var(--border);
+            border-radius: 8px;
+            font-size: 0.9rem;
             background: var(--card);
-        }
-        button {
-            background: var(--accent);
-            color: white;
-            border: none;
+            color: var(--text);
             cursor: pointer;
+            transition: border-color 0.2s, background 0.2s;
         }
-        button:hover { opacity: 0.9; }
-        button:disabled { opacity: 0.5; cursor: not-allowed; }
-        .loading { display: none; }
-        .papers { display: flex; flex-direction: column; gap: 0.75rem; }
+
+        select:hover {
+            border-color: var(--accent);
+            background: var(--card-hover);
+        }
+
+        select:focus {
+            outline: none;
+            border-color: var(--accent);
+            box-shadow: 0 0 0 3px rgba(88, 166, 255, 0.15);
+        }
+
+        button {
+            padding: 0.6rem 1.25rem;
+            border: none;
+            border-radius: 8px;
+            font-size: 0.9rem;
+            font-weight: 500;
+            background: var(--accent);
+            color: var(--bg);
+            cursor: pointer;
+            transition: background 0.2s, transform 0.1s;
+        }
+
+        button:hover {
+            background: var(--accent-hover);
+            transform: translateY(-1px);
+        }
+
+        button:active {
+            transform: translateY(0);
+        }
+
+        .papers {
+            display: flex;
+            flex-direction: column;
+            gap: 1rem;
+        }
+
         .paper {
             background: var(--card);
             border: 1px solid var(--border);
-            border-radius: 6px;
-            padding: 1rem;
+            border-radius: 12px;
+            padding: 1.25rem;
+            transition: border-color 0.2s, transform 0.2s, box-shadow 0.2s;
+            position: relative;
+            overflow: hidden;
         }
+
+        .paper::before {
+            content: '';
+            position: absolute;
+            left: 0;
+            top: 0;
+            bottom: 0;
+            width: 4px;
+            background: var(--area-color, var(--accent));
+        }
+
+        .paper:hover {
+            border-color: var(--text-muted);
+            transform: translateY(-2px);
+            box-shadow: 0 8px 24px rgba(0, 0, 0, 0.3);
+        }
+
+        .paper-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: flex-start;
+            gap: 1rem;
+            margin-bottom: 0.75rem;
+        }
+
         .paper-title {
-            font-size: 1rem;
+            font-size: 1.05rem;
             font-weight: 500;
-            color: var(--accent);
+            color: var(--text);
             text-decoration: none;
-            display: block;
-            margin-bottom: 0.5rem;
+            line-height: 1.4;
+            transition: color 0.2s;
         }
-        .paper-title:hover { text-decoration: underline; }
+
+        .paper-title:hover {
+            color: var(--accent);
+        }
+
+        .score {
+            background: linear-gradient(135deg, #238636, #2ea043);
+            color: white;
+            padding: 0.25rem 0.6rem;
+            border-radius: 6px;
+            font-weight: 600;
+            font-size: 0.85rem;
+            white-space: nowrap;
+            box-shadow: 0 2px 8px rgba(46, 160, 67, 0.3);
+        }
+
         .paper-meta {
             display: flex;
             flex-wrap: wrap;
-            gap: 0.5rem;
-            font-size: 0.8rem;
-            color: var(--muted);
-            margin-bottom: 0.5rem;
-        }
-        .score {
-            background: var(--score);
-            color: white;
-            padding: 0.1rem 0.4rem;
-            border-radius: 3px;
-            font-weight: 600;
-        }
-        .areas { display: flex; flex-wrap: wrap; gap: 0.25rem; margin-bottom: 0.5rem; }
-        .area-tag {
-            padding: 0.15rem 0.4rem;
-            background: var(--accent);
-            color: white;
-            border-radius: 3px;
-            font-size: 0.7rem;
-        }
-        .abstract {
+            align-items: center;
+            gap: 0.75rem;
             font-size: 0.85rem;
-            color: var(--muted);
+            color: var(--text-secondary);
+            margin-bottom: 0.75rem;
+        }
+
+        .source-badge {
+            padding: 0.2rem 0.6rem;
+            border-radius: 4px;
+            font-size: 0.75rem;
+            font-weight: 600;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+        }
+
+        .source-pubmed { background: rgba(68, 147, 248, 0.15); color: var(--pubmed); }
+        .source-biorxiv { background: rgba(218, 59, 1, 0.15); color: var(--biorxiv); }
+        .source-arxiv { background: rgba(179, 27, 27, 0.15); color: var(--arxiv); }
+
+        .authors {
+            color: var(--text-muted);
+            max-width: 400px;
+            white-space: nowrap;
+            overflow: hidden;
+            text-overflow: ellipsis;
+        }
+
+        .date {
+            color: var(--text-muted);
+        }
+
+        .areas {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 0.4rem;
+            margin-bottom: 0.75rem;
+        }
+
+        .area-tag {
+            padding: 0.2rem 0.5rem;
+            border-radius: 4px;
+            font-size: 0.75rem;
+            font-weight: 500;
+        }
+
+        .area-metagenomics { background: rgba(63, 185, 80, 0.15); color: var(--area-metagenomics); }
+        .area-viruses_outbreaks { background: rgba(248, 81, 73, 0.15); color: var(--area-viruses); }
+        .area-ngs { background: rgba(163, 113, 247, 0.15); color: var(--area-ngs); }
+        .area-ai_ml { background: rgba(121, 192, 255, 0.15); color: var(--area-ai); }
+        .area-human_genome { background: rgba(255, 166, 87, 0.15); color: var(--area-genome); }
+        .area-bioinformatics { background: rgba(255, 123, 114, 0.15); color: var(--area-bioinfo); }
+
+        .abstract {
+            font-size: 0.9rem;
+            color: var(--text-secondary);
+            line-height: 1.7;
             display: -webkit-box;
-            -webkit-line-clamp: 3;
+            -webkit-line-clamp: 4;
             -webkit-box-orient: vertical;
             overflow: hidden;
         }
-        .empty { text-align: center; padding: 3rem; color: var(--muted); }
-        .source-badge {
-            padding: 0.1rem 0.3rem;
-            background: var(--border);
-            border-radius: 3px;
-            font-size: 0.7rem;
-            text-transform: uppercase;
+
+        .empty {
+            text-align: center;
+            padding: 4rem 2rem;
+            color: var(--text-muted);
+            background: var(--bg-secondary);
+            border-radius: 12px;
+            border: 1px dashed var(--border);
         }
-        @media (max-width: 600px) {
-            .controls { flex-direction: column; align-items: stretch; }
+
+        .empty p:first-child {
+            font-size: 1.1rem;
+            margin-bottom: 0.5rem;
+            color: var(--text-secondary);
+        }
+
+        @media (max-width: 640px) {
+            .container { padding: 1rem; }
+            .controls {
+                flex-direction: column;
+                gap: 0.5rem;
+            }
             select, button { width: 100%; }
+            .paper-header { flex-direction: column; gap: 0.5rem; }
+            .score { align-self: flex-start; }
+            .authors { max-width: 100%; }
         }
     </style>
 </head>
 <body>
     <div class="container">
         <header>
-            <h1>PaperFeed</h1>
-            <div class="stats">{{ papers|length }} papers found</div>
+            <div class="logo">
+                <div class="logo-icon">P</div>
+                <h1>PaperFeed</h1>
+            </div>
+            <div class="stats">{{ papers|length }} papers</div>
         </header>
 
         <form class="controls" method="get">
             <select name="area">
                 <option value="">All areas</option>
                 {% for a in areas %}
-                <option value="{{ a }}" {% if area == a %}selected{% endif %}>{{ a }}</option>
+                <option value="{{ a }}" {% if area == a %}selected{% endif %}>{{ a.replace('_', ' ').title() }}</option>
                 {% endfor %}
             </select>
             <select name="source">
@@ -446,20 +637,22 @@ HTML_TEMPLATE = """
         <div class="papers">
             {% if papers %}
                 {% for paper in papers %}
-                <article class="paper">
-                    <a href="{{ paper.url }}" target="_blank" rel="noopener" class="paper-title">
-                        {{ paper.title }}
-                    </a>
-                    <div class="paper-meta">
+                <article class="paper" style="--area-color: var(--area-{{ paper.matched_areas[0] if paper.matched_areas else 'default' }}, var(--accent))">
+                    <div class="paper-header">
+                        <a href="{{ paper.url }}" target="_blank" rel="noopener" class="paper-title">
+                            {{ paper.title }}
+                        </a>
                         <span class="score">{{ paper.score }}</span>
-                        <span class="source-badge">{{ paper.source }}</span>
-                        <span>{{ paper.authors }}</span>
-                        <span>{{ paper.published_date }}</span>
+                    </div>
+                    <div class="paper-meta">
+                        <span class="source-badge source-{{ paper.source }}">{{ paper.source }}</span>
+                        <span class="authors">{{ paper.authors }}</span>
+                        <span class="date">{{ paper.published_date }}</span>
                     </div>
                     {% if paper.matched_areas %}
                     <div class="areas">
                         {% for a in paper.matched_areas %}
-                        <span class="area-tag">{{ a }}</span>
+                        <span class="area-tag area-{{ a }}">{{ a.replace('_', ' ') }}</span>
                         {% endfor %}
                     </div>
                     {% endif %}
