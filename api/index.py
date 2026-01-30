@@ -88,7 +88,7 @@ class Paper:
 
 # === Collectors ===
 
-async def fetch_pubmed(days: int, max_results: int, client: httpx.AsyncClient) -> list[Paper]:
+async def fetch_pubmed(days: int, max_results: int, terms: list[str], client: httpx.AsyncClient) -> list[Paper]:
     """Fetch papers from PubMed."""
     papers = []
     end_date = date.today()
@@ -98,7 +98,8 @@ async def fetch_pubmed(days: int, max_results: int, client: httpx.AsyncClient) -
     try:
         # Search for IDs
         search_url = "https://eutils.ncbi.nlm.nih.gov/entrez/eutils/esearch.fcgi"
-        params = {"db": "pubmed", "term": date_range, "retmax": max_results, "retmode": "json", "sort": "pub_date"}
+        term_query = _build_pubmed_query(terms=terms, date_range=date_range)
+        params = {"db": "pubmed", "term": term_query, "retmax": max_results, "retmode": "json", "sort": "pub_date"}
         resp = await client.get(search_url, params=params)
         resp.raise_for_status()
         ids = resp.json().get("esearchresult", {}).get("idlist", [])
@@ -124,6 +125,22 @@ async def fetch_pubmed(days: int, max_results: int, client: httpx.AsyncClient) -
         print(f"PubMed error: {e}")
 
     return papers
+
+def _build_pubmed_query(terms: Optional[list[str]], date_range: str) -> str:
+    if not terms:
+        return date_range
+    query_terms = []
+    for term in terms:
+        cleaned = term.strip()
+        if not cleaned:
+            continue
+        if " " in cleaned:
+            cleaned = f"\"{cleaned}\""
+        query_terms.append(f"{cleaned}[Title/Abstract]")
+    if not query_terms:
+        return date_range
+    terms_query = " OR ".join(query_terms)
+    return f"({terms_query}) AND {date_range}"
 
 def _parse_pubmed_article(article: ET.Element) -> Optional[Paper]:
     medline = article.find(".//MedlineCitation")
@@ -365,6 +382,18 @@ def is_high_impact(paper: Paper, config: Config) -> bool:
             return True
     return False
 
+def _collect_search_terms(config: Config) -> list[str]:
+    terms = []
+    seen = set()
+    for area in config.areas.values():
+        for term in area.terms:
+            cleaned = term.strip()
+            if not cleaned or cleaned.lower() in seen:
+                continue
+            seen.add(cleaned.lower())
+            terms.append(cleaned)
+    return terms
+
 # === Main Fetch Function ===
 
 async def fetch_all_papers(config: Config) -> list[Paper]:
@@ -373,6 +402,7 @@ async def fetch_all_papers(config: Config) -> list[Paper]:
 
 async def fetch_all_papers_for_days(config: Config, lookback_days: int) -> list[Paper]:
     """Fetch papers from all sources for a given lookback and score them."""
+    search_terms = _collect_search_terms(config)
     cache_key = (
         lookback_days,
         config.max_results,
@@ -391,7 +421,7 @@ async def fetch_all_papers_for_days(config: Config, lookback_days: int) -> list[
         tasks = []
 
         if config.pubmed_enabled:
-            tasks.append(fetch_pubmed(lookback_days, config.max_results, client))
+            tasks.append(fetch_pubmed(lookback_days, config.max_results, search_terms, client))
         if config.biorxiv_enabled:
             tasks.append(fetch_biorxiv(lookback_days, config.max_results, client))
         if config.arxiv_enabled:
