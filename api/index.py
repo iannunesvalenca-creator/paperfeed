@@ -1037,3 +1037,39 @@ async def index(
 @app.get("/api/health")
 async def health():
     return {"status": "ok"}
+
+
+@app.get("/api/debug")
+async def debug():
+    """Debug endpoint to test PubMed connectivity."""
+    import urllib.request
+    import urllib.parse
+
+    config = load_config()
+    search_terms = _collect_search_terms(config)
+
+    end_date = date.today()
+    start_date = end_date - timedelta(days=7)
+    date_range = f"{start_date:%Y/%m/%d}:{end_date:%Y/%m/%d}[edat]"
+
+    # Test regular query
+    query = _build_pubmed_query(search_terms[:5], date_range, None)
+
+    results = {
+        "terms_count": len(search_terms),
+        "query_preview": query[:200],
+        "high_impact_journals": config.high_impact_journals[:5],
+    }
+
+    try:
+        url = f"https://eutils.ncbi.nlm.nih.gov/entrez/eutils/esearch.fcgi?db=pubmed&term={urllib.parse.quote(query)}&retmax=10&retmode=json"
+        with urllib.request.urlopen(url, timeout=10) as resp:
+            import json
+            data = json.loads(resp.read())
+            results["pubmed_count"] = data.get("esearchresult", {}).get("count", "N/A")
+            results["pubmed_ids"] = len(data.get("esearchresult", {}).get("idlist", []))
+            results["pubmed_status"] = "OK"
+    except Exception as e:
+        results["pubmed_status"] = f"ERROR: {e}"
+
+    return results
