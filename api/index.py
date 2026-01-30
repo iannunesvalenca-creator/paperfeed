@@ -96,13 +96,21 @@ async def fetch_pubmed(days: int, max_results: int, terms: list[str], client: ht
     date_range = f"{start_date:%Y/%m/%d}:{end_date:%Y/%m/%d}[edat]"
 
     try:
-        # Search for IDs
+        # Search for IDs (try Title/Abstract + MeSH first, fall back to All Fields)
         search_url = "https://eutils.ncbi.nlm.nih.gov/entrez/eutils/esearch.fcgi"
-        term_query = _build_pubmed_query(terms=terms, date_range=date_range)
+        term_query = _build_pubmed_query(terms=terms, date_range=date_range, use_all_fields=False)
         params = {"db": "pubmed", "term": term_query, "retmax": max_results, "retmode": "json", "sort": "pub_date"}
         resp = await client.get(search_url, params=params)
         resp.raise_for_status()
         ids = resp.json().get("esearchresult", {}).get("idlist", [])
+
+        # Fallback: if no results, try All Fields query
+        if not ids and terms:
+            term_query_fallback = _build_pubmed_query(terms=terms, date_range=date_range, use_all_fields=True)
+            params["term"] = term_query_fallback
+            resp = await client.get(search_url, params=params)
+            resp.raise_for_status()
+            ids = resp.json().get("esearchresult", {}).get("idlist", [])
 
         if not ids:
             return papers
@@ -126,7 +134,7 @@ async def fetch_pubmed(days: int, max_results: int, terms: list[str], client: ht
 
     return papers
 
-def _build_pubmed_query(terms: Optional[list[str]], date_range: str) -> str:
+def _build_pubmed_query(terms: Optional[list[str]], date_range: str, use_all_fields: bool = False) -> str:
     if not terms:
         return date_range
     query_terms = []
@@ -136,7 +144,11 @@ def _build_pubmed_query(terms: Optional[list[str]], date_range: str) -> str:
             continue
         if " " in cleaned:
             cleaned = f"\"{cleaned}\""
-        query_terms.append(f"{cleaned}[Title/Abstract]")
+        if use_all_fields:
+            query_terms.append(f"{cleaned}[All Fields]")
+        else:
+            # Search Title/Abstract and MeSH for better coverage
+            query_terms.append(f"({cleaned}[Title/Abstract] OR {cleaned}[MeSH Terms])")
     if not query_terms:
         return date_range
     terms_query = " OR ".join(query_terms)
