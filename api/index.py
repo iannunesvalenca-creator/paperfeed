@@ -100,33 +100,38 @@ async def fetch_pubmed_high_impact(
     return await _fetch_pubmed_with_query(days, max_results, terms, journals, client)
 
 
-async def _fetch_pubmed_with_query(
-    days: int, max_results: int, terms: list[str], journals: Optional[list[str]], client: httpx.AsyncClient
+def _fetch_pubmed_sync(
+    days: int, max_results: int, terms: list[str], journals: Optional[list[str]]
 ) -> list[Paper]:
-    """Core PubMed fetch with optional journal filter."""
+    """Core PubMed fetch using urllib (sync, more reliable on serverless)."""
+    import urllib.request
+    import urllib.parse
+    import json
+
     papers = []
     end_date = date.today()
     start_date = end_date - timedelta(days=days)
     date_range = f"{start_date:%Y/%m/%d}:{end_date:%Y/%m/%d}[edat]"
 
     try:
-        search_url = "https://eutils.ncbi.nlm.nih.gov/entrez/eutils/esearch.fcgi"
+        # Search for IDs
         term_query = _build_pubmed_query(terms=terms, date_range=date_range, journals=journals)
-        params = {"db": "pubmed", "term": term_query, "retmax": max_results, "retmode": "json", "sort": "pub_date"}
-        resp = await client.get(search_url, params=params)
-        resp.raise_for_status()
-        ids = resp.json().get("esearchresult", {}).get("idlist", [])
+        search_url = f"https://eutils.ncbi.nlm.nih.gov/entrez/eutils/esearch.fcgi?db=pubmed&term={urllib.parse.quote(term_query)}&retmax={max_results}&retmode=json&sort=pub_date"
+
+        with urllib.request.urlopen(search_url, timeout=20) as resp:
+            data = json.loads(resp.read())
+            ids = data.get("esearchresult", {}).get("idlist", [])
 
         if not ids:
             return papers
 
         # Fetch details
-        fetch_url = "https://eutils.ncbi.nlm.nih.gov/entrez/eutils/efetch.fcgi"
-        params = {"db": "pubmed", "id": ",".join(ids[:max_results]), "retmode": "xml"}
-        resp = await client.get(fetch_url, params=params)
-        resp.raise_for_status()
+        fetch_url = f"https://eutils.ncbi.nlm.nih.gov/entrez/eutils/efetch.fcgi?db=pubmed&id={','.join(ids[:max_results])}&retmode=xml"
 
-        root = ET.fromstring(resp.text)
+        with urllib.request.urlopen(fetch_url, timeout=20) as resp:
+            xml_text = resp.read().decode("utf-8")
+
+        root = ET.fromstring(xml_text)
         for article in root.findall(".//PubmedArticle"):
             try:
                 paper = _parse_pubmed_article(article)
@@ -138,6 +143,15 @@ async def _fetch_pubmed_with_query(
         print(f"PubMed error: {e}")
 
     return papers
+
+
+async def _fetch_pubmed_with_query(
+    days: int, max_results: int, terms: list[str], journals: Optional[list[str]], client: httpx.AsyncClient
+) -> list[Paper]:
+    """Wrapper that runs sync PubMed fetch in thread pool."""
+    import asyncio
+    loop = asyncio.get_event_loop()
+    return await loop.run_in_executor(None, _fetch_pubmed_sync, days, max_results, terms, journals)
 
 def _build_pubmed_query(
     terms: Optional[list[str]], date_range: str, journals: Optional[list[str]] = None
