@@ -450,23 +450,42 @@ async def fetch_all_papers_for_days(config: Config, lookback_days: int, high_imp
     if _CACHE["key"] == cache_key and (now - _CACHE["timestamp"]) < CACHE_TTL_SECONDS:
         return list(_CACHE["papers"] or [])
 
-    async with httpx.AsyncClient(timeout=30.0) as client:
-        tasks = []
+    async with httpx.AsyncClient(timeout=25.0) as client:
+        all_results = []
 
+        # Fetch PubMed sequentially to avoid rate limits
         if config.pubmed_enabled:
             # Regular keyword search
-            tasks.append(fetch_pubmed(lookback_days, config.max_results, search_terms, client))
-            # High-impact journal search (longer window, keywords + journal filter)
-            if config.high_impact_journals:
-                tasks.append(fetch_pubmed_high_impact(
-                    high_impact_days, config.max_results, search_terms, config.high_impact_journals, client
-                ))
-        if config.biorxiv_enabled:
-            tasks.append(fetch_biorxiv(lookback_days, config.max_results, client))
-        if config.arxiv_enabled:
-            tasks.append(fetch_arxiv(lookback_days, config.max_results, config.arxiv_categories, client))
+            try:
+                pubmed_papers = await fetch_pubmed(lookback_days, config.max_results, search_terms, client)
+                all_results.append(pubmed_papers)
+            except Exception as e:
+                print(f"PubMed regular search failed: {e}")
+                all_results.append([])
 
-        results = await asyncio.gather(*tasks, return_exceptions=True)
+            # High-impact journal search
+            if config.high_impact_journals:
+                try:
+                    hi_papers = await fetch_pubmed_high_impact(
+                        high_impact_days, config.max_results, search_terms, config.high_impact_journals, client
+                    )
+                    all_results.append(hi_papers)
+                except Exception as e:
+                    print(f"PubMed high-impact search failed: {e}")
+                    all_results.append([])
+
+        # Fetch other sources in parallel
+        other_tasks = []
+        if config.biorxiv_enabled:
+            other_tasks.append(fetch_biorxiv(lookback_days, config.max_results, client))
+        if config.arxiv_enabled:
+            other_tasks.append(fetch_arxiv(lookback_days, config.max_results, config.arxiv_categories, client))
+
+        if other_tasks:
+            other_results = await asyncio.gather(*other_tasks, return_exceptions=True)
+            all_results.extend(other_results)
+
+        results = all_results
 
     all_papers = []
     seen_urls = set()
