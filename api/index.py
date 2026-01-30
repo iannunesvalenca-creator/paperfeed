@@ -27,6 +27,7 @@ class ResearchArea:
 class Config:
     areas: dict[str, ResearchArea]
     lookback_days: int
+    max_results: int
     title_multiplier: float
     pubmed_enabled: bool
     biorxiv_enabled: bool
@@ -55,6 +56,7 @@ def load_config() -> Config:
     return Config(
         areas=areas,
         lookback_days=raw.get("collection", {}).get("lookback_days", 7),
+        max_results=raw.get("collection", {}).get("max_results", 200),
         title_multiplier=raw.get("scoring", {}).get("title_multiplier", 2.0),
         pubmed_enabled=sources.get("pubmed", True),
         biorxiv_enabled=sources.get("biorxiv", True),
@@ -86,7 +88,7 @@ class Paper:
 
 # === Collectors ===
 
-async def fetch_pubmed(days: int, client: httpx.AsyncClient) -> list[Paper]:
+async def fetch_pubmed(days: int, max_results: int, client: httpx.AsyncClient) -> list[Paper]:
     """Fetch papers from PubMed."""
     papers = []
     end_date = date.today()
@@ -96,7 +98,7 @@ async def fetch_pubmed(days: int, client: httpx.AsyncClient) -> list[Paper]:
     try:
         # Search for IDs
         search_url = "https://eutils.ncbi.nlm.nih.gov/entrez/eutils/esearch.fcgi"
-        params = {"db": "pubmed", "term": date_range, "retmax": 100, "retmode": "json", "sort": "pub_date"}
+        params = {"db": "pubmed", "term": date_range, "retmax": max_results, "retmode": "json", "sort": "pub_date"}
         resp = await client.get(search_url, params=params)
         resp.raise_for_status()
         ids = resp.json().get("esearchresult", {}).get("idlist", [])
@@ -106,7 +108,7 @@ async def fetch_pubmed(days: int, client: httpx.AsyncClient) -> list[Paper]:
 
         # Fetch details
         fetch_url = "https://eutils.ncbi.nlm.nih.gov/entrez/eutils/efetch.fcgi"
-        params = {"db": "pubmed", "id": ",".join(ids[:100]), "retmode": "xml"}
+        params = {"db": "pubmed", "id": ",".join(ids[:max_results]), "retmode": "xml"}
         resp = await client.get(fetch_url, params=params)
         resp.raise_for_status()
 
@@ -228,7 +230,7 @@ def _date_from_parts(year: Optional[str], month: Optional[str], day: Optional[st
     except ValueError:
         return None
 
-async def fetch_biorxiv(days: int, client: httpx.AsyncClient) -> list[Paper]:
+async def fetch_biorxiv(days: int, max_results: int, client: httpx.AsyncClient) -> list[Paper]:
     """Fetch papers from bioRxiv."""
     papers = []
     end_date = date.today()
@@ -240,7 +242,7 @@ async def fetch_biorxiv(days: int, client: httpx.AsyncClient) -> list[Paper]:
         resp.raise_for_status()
         data = resp.json()
 
-        for item in data.get("collection", [])[:100]:
+        for item in data.get("collection", [])[:max_results]:
             try:
                 doi = item.get("doi", "")
                 papers.append(Paper(
@@ -259,7 +261,7 @@ async def fetch_biorxiv(days: int, client: httpx.AsyncClient) -> list[Paper]:
 
     return papers
 
-async def fetch_arxiv(days: int, categories: list[str], client: httpx.AsyncClient) -> list[Paper]:
+async def fetch_arxiv(days: int, max_results: int, categories: list[str], client: httpx.AsyncClient) -> list[Paper]:
     """Fetch papers from arXiv."""
     papers = []
 
@@ -269,7 +271,7 @@ async def fetch_arxiv(days: int, categories: list[str], client: httpx.AsyncClien
         params = {
             "search_query": f"({cat_query})",
             "start": 0,
-            "max_results": 100,
+            "max_results": max_results,
             "sortBy": "submittedDate",
             "sortOrder": "descending",
         }
@@ -344,8 +346,22 @@ def is_high_impact(paper: Paper, config: Config) -> bool:
     if not paper.journal:
         return False
     paper_norm = _normalize_journal(paper.journal)
+    if not paper_norm:
+        return False
+    alias_map = {
+        "pnas": "procnatlacadsciusa",
+    }
     for journal in config.high_impact_journals:
-        if paper_norm == _normalize_journal(journal):
+        journal_norm = _normalize_journal(journal)
+        if not journal_norm:
+            continue
+        if paper_norm == journal_norm:
+            return True
+        if journal_norm in paper_norm or paper_norm in journal_norm:
+            return True
+        if alias_map.get(journal_norm) == paper_norm:
+            return True
+        if alias_map.get(paper_norm) == journal_norm:
             return True
     return False
 
@@ -359,6 +375,7 @@ async def fetch_all_papers_for_days(config: Config, lookback_days: int) -> list[
     """Fetch papers from all sources for a given lookback and score them."""
     cache_key = (
         lookback_days,
+        config.max_results,
         config.pubmed_enabled,
         config.biorxiv_enabled,
         config.arxiv_enabled,
@@ -374,11 +391,11 @@ async def fetch_all_papers_for_days(config: Config, lookback_days: int) -> list[
         tasks = []
 
         if config.pubmed_enabled:
-            tasks.append(fetch_pubmed(lookback_days, client))
+            tasks.append(fetch_pubmed(lookback_days, config.max_results, client))
         if config.biorxiv_enabled:
-            tasks.append(fetch_biorxiv(lookback_days, client))
+            tasks.append(fetch_biorxiv(lookback_days, config.max_results, client))
         if config.arxiv_enabled:
-            tasks.append(fetch_arxiv(lookback_days, config.arxiv_categories, client))
+            tasks.append(fetch_arxiv(lookback_days, config.max_results, config.arxiv_categories, client))
 
         results = await asyncio.gather(*tasks, return_exceptions=True)
 

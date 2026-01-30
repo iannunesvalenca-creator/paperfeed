@@ -11,6 +11,7 @@ sources:
 
 collection:
   lookback_days: 7
+  max_results: 500
 
 high_impact_lookback_days: 90
 other_lookback_options:
