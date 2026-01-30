@@ -75,3 +75,14 @@ areas:
 
 scoring:
   title_multiplier: 2.0
+
+high_impact_journals:
+  - Nature
+  - Science
+  - The Lancet
+  - PNAS
+  - Proceedings of the National Academy of Sciences
+  - Cell
+  - Nature Biotechnology
+  - Nature Medicine
+  - Nature Genetics

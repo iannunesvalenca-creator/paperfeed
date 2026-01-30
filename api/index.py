@@ -1,6 +1,7 @@
 """Main FastAPI application for Vercel deployment."""
 
 import asyncio
+import time
 from pathlib import Path
 from dataclasses import dataclass, field
 from datetime import date, datetime, timedelta
@@ -12,8 +13,7 @@ import feedparser
 import yaml
 from fastapi import FastAPI, Request, Query
 from fastapi.responses import HTMLResponse
-from fastapi.staticfiles import StaticFiles
-from jinja2 import Template
+from jinja2 import Environment, select_autoescape
 
 # === Configuration ===
 
@@ -32,6 +32,7 @@ class Config:
     biorxiv_enabled: bool
     arxiv_enabled: bool
     arxiv_categories: list[str]
+    high_impact_journals: list[str]
 
 def load_config() -> Config:
     config_path = Path(__file__).parent.parent / "config.yaml"
@@ -57,7 +58,13 @@ def load_config() -> Config:
         biorxiv_enabled=sources.get("biorxiv", True),
         arxiv_enabled=arxiv.get("enabled", True) if isinstance(arxiv, dict) else arxiv,
         arxiv_categories=arxiv.get("categories", ["cs.AI", "q-bio.GN"]) if isinstance(arxiv, dict) else ["cs.AI", "q-bio.GN"],
+        high_impact_journals=raw.get("high_impact_journals", []),
     )
+
+# === Simple Cache (in-memory, best-effort for serverless) ===
+
+CACHE_TTL_SECONDS = 300
+_CACHE = {"timestamp": 0.0, "key": None, "papers": None}
 
 # === Paper Model ===
 
@@ -69,6 +76,7 @@ class Paper:
     url: str
     published_date: date
     source: str
+    journal: str = ""
     matched_areas: list[str] = field(default_factory=list)
     score: float = 0.0
 
@@ -84,7 +92,7 @@ async def fetch_pubmed(days: int, client: httpx.AsyncClient) -> list[Paper]:
     try:
         # Search for IDs
         search_url = "https://eutils.ncbi.nlm.nih.gov/entrez/eutils/esearch.fcgi"
-        params = {"db": "pubmed", "term": date_range, "retmax": 200, "retmode": "json", "sort": "pub_date"}
+        params = {"db": "pubmed", "term": date_range, "retmax": 100, "retmode": "json", "sort": "pub_date"}
         resp = await client.get(search_url, params=params)
         resp.raise_for_status()
         ids = resp.json().get("esearchresult", {}).get("idlist", [])
@@ -121,13 +129,13 @@ def _parse_pubmed_article(article: ET.Element) -> Optional[Paper]:
         return None
 
     title_elem = article_elem.find(".//ArticleTitle")
-    title = title_elem.text if title_elem is not None and title_elem.text else ""
+    title = "".join(title_elem.itertext()).strip() if title_elem is not None else ""
     if not title:
         return None
 
     abstract_parts = []
     for abs_text in article_elem.findall(".//Abstract/AbstractText"):
-        text = abs_text.text or ""
+        text = "".join(abs_text.itertext()).strip()
         abstract_parts.append(text)
     abstract = " ".join(abstract_parts)
 
@@ -143,15 +151,78 @@ def _parse_pubmed_article(article: ET.Element) -> Optional[Paper]:
     pmid_elem = medline.find(".//PMID")
     pmid = pmid_elem.text if pmid_elem is not None else ""
     url = f"https://pubmed.ncbi.nlm.nih.gov/{pmid}/" if pmid else ""
+    journal_title_elem = article_elem.find(".//Journal/Title")
+    journal_title = "".join(journal_title_elem.itertext()).strip() if journal_title_elem is not None else ""
 
+    published = _parse_pubmed_date(article_elem, medline)
     return Paper(
         title=title,
         authors=authors_str,
         abstract=abstract,
         url=url,
-        published_date=date.today(),
+        published_date=published,
         source="pubmed",
+        journal=journal_title,
     )
+
+def _parse_pubmed_date(article_elem: ET.Element, medline: ET.Element) -> date:
+    """Best-effort pub date parsing for PubMed articles."""
+    # Prefer explicit ArticleDate
+    article_date = article_elem.find(".//ArticleDate")
+    if article_date is not None:
+        year = article_date.findtext("Year")
+        month = article_date.findtext("Month")
+        day = article_date.findtext("Day")
+        parsed = _date_from_parts(year, month, day)
+        if parsed:
+            return parsed
+
+    # Fallback to Journal PubDate
+    pub_date = medline.find(".//JournalIssue/PubDate")
+    if pub_date is not None:
+        year = pub_date.findtext("Year")
+        month = pub_date.findtext("Month")
+        day = pub_date.findtext("Day")
+        parsed = _date_from_parts(year, month, day)
+        if parsed:
+            return parsed
+
+    return date.today()
+
+def _date_from_parts(year: Optional[str], month: Optional[str], day: Optional[str]) -> Optional[date]:
+    if not year:
+        return None
+    try:
+        y = int(year)
+    except ValueError:
+        return None
+
+    if month:
+        month_map = {
+            "jan": 1, "feb": 2, "mar": 3, "apr": 4, "may": 5, "jun": 6,
+            "jul": 7, "aug": 8, "sep": 9, "oct": 10, "nov": 11, "dec": 12,
+        }
+        try:
+            m = int(month)
+        except ValueError:
+            m = month_map.get(month.strip().lower()[:3])
+        if not m:
+            m = 1
+    else:
+        m = 1
+
+    if day:
+        try:
+            d = int(day)
+        except ValueError:
+            d = 1
+    else:
+        d = 1
+
+    try:
+        return date(y, m, d)
+    except ValueError:
+        return None
 
 async def fetch_biorxiv(days: int, client: httpx.AsyncClient) -> list[Paper]:
     """Fetch papers from bioRxiv."""
@@ -175,6 +246,7 @@ async def fetch_biorxiv(days: int, client: httpx.AsyncClient) -> list[Paper]:
                     url=f"https://www.biorxiv.org/content/{doi}" if doi else "",
                     published_date=date.fromisoformat(item.get("date", str(date.today()))),
                     source="biorxiv",
+                    journal="bioRxiv",
                 ))
             except Exception:
                 continue
@@ -225,6 +297,7 @@ async def fetch_arxiv(days: int, categories: list[str], client: httpx.AsyncClien
                     url=entry.get("link", ""),
                     published_date=pub_date,
                     source="arxiv",
+                    journal="arXiv",
                 ))
             except Exception:
                 continue
@@ -260,10 +333,35 @@ def score_paper(paper: Paper, config: Config) -> Paper:
     paper.score = round(total_score, 1)
     return paper
 
+def _normalize_journal(name: str) -> str:
+    return "".join(ch for ch in name.lower() if ch.isalnum())
+
+def is_high_impact(paper: Paper, config: Config) -> bool:
+    if not paper.journal:
+        return False
+    paper_norm = _normalize_journal(paper.journal)
+    for journal in config.high_impact_journals:
+        if paper_norm == _normalize_journal(journal):
+            return True
+    return False
+
 # === Main Fetch Function ===
 
 async def fetch_all_papers(config: Config) -> list[Paper]:
     """Fetch papers from all sources and score them."""
+    cache_key = (
+        config.lookback_days,
+        config.pubmed_enabled,
+        config.biorxiv_enabled,
+        config.arxiv_enabled,
+        tuple(config.arxiv_categories),
+        tuple((k, v.weight, tuple(v.terms)) for k, v in sorted(config.areas.items())),
+        config.title_multiplier,
+    )
+    now = time.time()
+    if _CACHE["key"] == cache_key and (now - _CACHE["timestamp"]) < CACHE_TTL_SECONDS:
+        return list(_CACHE["papers"] or [])
+
     async with httpx.AsyncClient(timeout=30.0) as client:
         tasks = []
 
@@ -288,6 +386,9 @@ async def fetch_all_papers(config: Config) -> list[Paper]:
     # Sort by score descending
     relevant.sort(key=lambda p: (-p.score, p.published_date), reverse=False)
 
+    _CACHE["timestamp"] = now
+    _CACHE["key"] = cache_key
+    _CACHE["papers"] = list(relevant)
     return relevant
 
 # === FastAPI App ===
@@ -452,6 +553,22 @@ HTML_TEMPLATE = """
             gap: 1rem;
         }
 
+        .section-title {
+            margin: 1.5rem 0 0.75rem;
+            font-size: 1.05rem;
+            font-weight: 600;
+            color: var(--text);
+            display: flex;
+            align-items: center;
+            gap: 0.6rem;
+        }
+
+        .section-title span {
+            color: var(--text-secondary);
+            font-size: 0.9rem;
+            font-weight: 500;
+        }
+
         .paper {
             background: var(--card);
             border: 1px solid var(--border);
@@ -460,6 +577,10 @@ HTML_TEMPLATE = """
             transition: border-color 0.2s, transform 0.2s, box-shadow 0.2s;
             position: relative;
             overflow: hidden;
+            opacity: 0;
+            transform: translateY(24px) rotateX(4deg);
+            transition: opacity 0.5s ease, transform 0.5s ease, border-color 0.2s, box-shadow 0.2s;
+            will-change: transform, opacity;
         }
 
         .paper::before {
@@ -476,6 +597,11 @@ HTML_TEMPLATE = """
             border-color: var(--text-muted);
             transform: translateY(-2px);
             box-shadow: 0 8px 24px rgba(0, 0, 0, 0.3);
+        }
+
+        .paper.in-view {
+            opacity: 1;
+            transform: translateY(0) rotateX(0);
         }
 
         .paper-header {
@@ -634,9 +760,43 @@ HTML_TEMPLATE = """
             <button type="submit">Apply Filters</button>
         </form>
 
-        <div class="papers">
-            {% if papers %}
-                {% for paper in papers %}
+        {% if papers %}
+            <div class="section-title">High-impact journals <span>{{ high_impact_papers|length }} papers</span></div>
+            <div class="papers">
+                {% if high_impact_papers %}
+                    {% for paper in high_impact_papers %}
+                    <article class="paper" style="--area-color: var(--area-{{ paper.matched_areas[0] if paper.matched_areas else 'default' }}, var(--accent))">
+                        <div class="paper-header">
+                            <a href="{{ paper.url }}" target="_blank" rel="noopener" class="paper-title">
+                                {{ paper.title }}
+                            </a>
+                            <span class="score">{{ paper.score }}</span>
+                        </div>
+                        <div class="paper-meta">
+                            <span class="source-badge source-{{ paper.source }}">{{ paper.source }}</span>
+                            <span class="authors">{{ paper.authors }}</span>
+                            <span class="date">{{ paper.published_date }}</span>
+                        </div>
+                        {% if paper.matched_areas %}
+                        <div class="areas">
+                            {% for a in paper.matched_areas %}
+                            <span class="area-tag area-{{ a }}">{{ a.replace('_', ' ') }}</span>
+                            {% endfor %}
+                        </div>
+                        {% endif %}
+                        <p class="abstract">{{ paper.abstract }}</p>
+                    </article>
+                    {% endfor %}
+                {% else %}
+                    <div class="empty">
+                        <p>No high-impact journal papers in this selection.</p>
+                    </div>
+                {% endif %}
+            </div>
+
+            <div class="section-title">Other papers <span>{{ other_papers|length }} papers</span></div>
+            <div class="papers">
+                {% for paper in other_papers %}
                 <article class="paper" style="--area-color: var(--area-{{ paper.matched_areas[0] if paper.matched_areas else 'default' }}, var(--accent))">
                     <div class="paper-header">
                         <a href="{{ paper.url }}" target="_blank" rel="noopener" class="paper-title">
@@ -659,14 +819,26 @@ HTML_TEMPLATE = """
                     <p class="abstract">{{ paper.abstract }}</p>
                 </article>
                 {% endfor %}
-            {% else %}
-                <div class="empty">
-                    <p>No papers found matching your criteria.</p>
-                    <p>Try adjusting filters or check back later.</p>
-                </div>
-            {% endif %}
-        </div>
+            </div>
+        {% else %}
+            <div class="empty">
+                <p>No papers found matching your criteria.</p>
+                <p>Try adjusting filters or check back later.</p>
+            </div>
+        {% endif %}
     </div>
+    <script>
+        const observer = new IntersectionObserver((entries) => {
+            for (const entry of entries) {
+                if (entry.isIntersecting) {
+                    entry.target.classList.add('in-view');
+                    observer.unobserve(entry.target);
+                }
+            }
+        }, { threshold: 0.15 });
+
+        document.querySelectorAll('.paper').forEach((paper) => observer.observe(paper));
+    </script>
 </body>
 </html>
 """
@@ -695,9 +867,15 @@ async def index(
     else:
         papers.sort(key=lambda p: p.score, reverse=True)
 
-    template = Template(HTML_TEMPLATE)
+    high_impact_papers = [p for p in papers if is_high_impact(p, config)]
+    other_papers = [p for p in papers if not is_high_impact(p, config)]
+
+    env = Environment(autoescape=select_autoescape(["html", "xml"]))
+    template = env.from_string(HTML_TEMPLATE)
     html = template.render(
         papers=papers,
+        high_impact_papers=high_impact_papers,
+        other_papers=other_papers,
         areas=list(config.areas.keys()),
         area=area,
         source=source,
