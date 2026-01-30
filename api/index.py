@@ -89,28 +89,33 @@ class Paper:
 # === Collectors ===
 
 async def fetch_pubmed(days: int, max_results: int, terms: list[str], client: httpx.AsyncClient) -> list[Paper]:
-    """Fetch papers from PubMed."""
+    """Fetch papers from PubMed matching keywords."""
+    return await _fetch_pubmed_with_query(days, max_results, terms, None, client)
+
+
+async def fetch_pubmed_high_impact(
+    days: int, max_results: int, terms: list[str], journals: list[str], client: httpx.AsyncClient
+) -> list[Paper]:
+    """Fetch papers from high-impact journals matching keywords."""
+    return await _fetch_pubmed_with_query(days, max_results, terms, journals, client)
+
+
+async def _fetch_pubmed_with_query(
+    days: int, max_results: int, terms: list[str], journals: Optional[list[str]], client: httpx.AsyncClient
+) -> list[Paper]:
+    """Core PubMed fetch with optional journal filter."""
     papers = []
     end_date = date.today()
     start_date = end_date - timedelta(days=days)
     date_range = f"{start_date:%Y/%m/%d}:{end_date:%Y/%m/%d}[edat]"
 
     try:
-        # Search for IDs (try Title/Abstract + MeSH first, fall back to All Fields)
         search_url = "https://eutils.ncbi.nlm.nih.gov/entrez/eutils/esearch.fcgi"
-        term_query = _build_pubmed_query(terms=terms, date_range=date_range, use_all_fields=False)
+        term_query = _build_pubmed_query(terms=terms, date_range=date_range, journals=journals)
         params = {"db": "pubmed", "term": term_query, "retmax": max_results, "retmode": "json", "sort": "pub_date"}
         resp = await client.get(search_url, params=params)
         resp.raise_for_status()
         ids = resp.json().get("esearchresult", {}).get("idlist", [])
-
-        # Fallback: if no results, try All Fields query
-        if not ids and terms:
-            term_query_fallback = _build_pubmed_query(terms=terms, date_range=date_range, use_all_fields=True)
-            params["term"] = term_query_fallback
-            resp = await client.get(search_url, params=params)
-            resp.raise_for_status()
-            ids = resp.json().get("esearchresult", {}).get("idlist", [])
 
         if not ids:
             return papers
@@ -134,25 +139,39 @@ async def fetch_pubmed(days: int, max_results: int, terms: list[str], client: ht
 
     return papers
 
-def _build_pubmed_query(terms: Optional[list[str]], date_range: str, use_all_fields: bool = False) -> str:
-    if not terms:
-        return date_range
-    query_terms = []
-    for term in terms:
-        cleaned = term.strip()
-        if not cleaned:
-            continue
-        if " " in cleaned:
-            cleaned = f"\"{cleaned}\""
-        if use_all_fields:
-            query_terms.append(f"{cleaned}[All Fields]")
-        else:
-            # Search Title/Abstract and MeSH for better coverage
+def _build_pubmed_query(
+    terms: Optional[list[str]], date_range: str, journals: Optional[list[str]] = None
+) -> str:
+    """Build PubMed query with optional journal filter."""
+    parts = []
+
+    # Keywords (Title/Abstract + MeSH)
+    if terms:
+        query_terms = []
+        for term in terms:
+            cleaned = term.strip()
+            if not cleaned:
+                continue
+            if " " in cleaned:
+                cleaned = f'"{cleaned}"'
             query_terms.append(f"({cleaned}[Title/Abstract] OR {cleaned}[MeSH Terms])")
-    if not query_terms:
-        return date_range
-    terms_query = " OR ".join(query_terms)
-    return f"({terms_query}) AND {date_range}"
+        if query_terms:
+            parts.append(f"({' OR '.join(query_terms)})")
+
+    # Journal filter
+    if journals:
+        journal_terms = []
+        for j in journals:
+            j_clean = j.strip()
+            if j_clean:
+                journal_terms.append(f'"{j_clean}"[Journal]')
+        if journal_terms:
+            parts.append(f"({' OR '.join(journal_terms)})")
+
+    # Date range
+    parts.append(date_range)
+
+    return " AND ".join(parts)
 
 def _parse_pubmed_article(article: ET.Element) -> Optional[Paper]:
     medline = article.find(".//MedlineCitation")
@@ -410,13 +429,14 @@ def _collect_search_terms(config: Config) -> list[str]:
 
 async def fetch_all_papers(config: Config) -> list[Paper]:
     """Fetch papers from all sources and score them."""
-    return await fetch_all_papers_for_days(config, config.lookback_days)
+    return await fetch_all_papers_for_days(config, config.lookback_days, config.high_impact_lookback_days)
 
-async def fetch_all_papers_for_days(config: Config, lookback_days: int) -> list[Paper]:
+async def fetch_all_papers_for_days(config: Config, lookback_days: int, high_impact_days: int) -> list[Paper]:
     """Fetch papers from all sources for a given lookback and score them."""
     search_terms = _collect_search_terms(config)
     cache_key = (
         lookback_days,
+        high_impact_days,
         config.max_results,
         config.pubmed_enabled,
         config.biorxiv_enabled,
@@ -424,6 +444,7 @@ async def fetch_all_papers_for_days(config: Config, lookback_days: int) -> list[
         tuple(config.arxiv_categories),
         tuple((k, v.weight, tuple(v.terms)) for k, v in sorted(config.areas.items())),
         config.title_multiplier,
+        tuple(config.high_impact_journals),
     )
     now = time.time()
     if _CACHE["key"] == cache_key and (now - _CACHE["timestamp"]) < CACHE_TTL_SECONDS:
@@ -433,7 +454,13 @@ async def fetch_all_papers_for_days(config: Config, lookback_days: int) -> list[
         tasks = []
 
         if config.pubmed_enabled:
+            # Regular keyword search
             tasks.append(fetch_pubmed(lookback_days, config.max_results, search_terms, client))
+            # High-impact journal search (longer window, keywords + journal filter)
+            if config.high_impact_journals:
+                tasks.append(fetch_pubmed_high_impact(
+                    high_impact_days, config.max_results, search_terms, config.high_impact_journals, client
+                ))
         if config.biorxiv_enabled:
             tasks.append(fetch_biorxiv(lookback_days, config.max_results, client))
         if config.arxiv_enabled:
@@ -442,9 +469,13 @@ async def fetch_all_papers_for_days(config: Config, lookback_days: int) -> list[
         results = await asyncio.gather(*tasks, return_exceptions=True)
 
     all_papers = []
+    seen_urls = set()
     for result in results:
         if isinstance(result, list):
-            all_papers.extend(result)
+            for paper in result:
+                if paper.url and paper.url not in seen_urls:
+                    seen_urls.add(paper.url)
+                    all_papers.append(paper)
 
     # Score and filter
     scored = [score_paper(p, config) for p in all_papers]
@@ -941,8 +972,7 @@ async def index(
     if days not in config.other_lookback_options:
         days = config.lookback_days
 
-    max_days = max(config.high_impact_lookback_days, days)
-    papers = await fetch_all_papers_for_days(config, max_days)
+    papers = await fetch_all_papers_for_days(config, days, config.high_impact_lookback_days)
 
     # Filter by area
     if area:
