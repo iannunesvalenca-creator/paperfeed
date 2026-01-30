@@ -33,6 +33,8 @@ class Config:
     arxiv_enabled: bool
     arxiv_categories: list[str]
     high_impact_journals: list[str]
+    high_impact_lookback_days: int
+    other_lookback_options: list[int]
 
 def load_config() -> Config:
     config_path = Path(__file__).parent.parent / "config.yaml"
@@ -59,6 +61,8 @@ def load_config() -> Config:
         arxiv_enabled=arxiv.get("enabled", True) if isinstance(arxiv, dict) else arxiv,
         arxiv_categories=arxiv.get("categories", ["cs.AI", "q-bio.GN"]) if isinstance(arxiv, dict) else ["cs.AI", "q-bio.GN"],
         high_impact_journals=raw.get("high_impact_journals", []),
+        high_impact_lookback_days=raw.get("high_impact_lookback_days", 90),
+        other_lookback_options=raw.get("other_lookback_options", [7, 14, 30, 60, 90]),
     )
 
 # === Simple Cache (in-memory, best-effort for serverless) ===
@@ -349,8 +353,12 @@ def is_high_impact(paper: Paper, config: Config) -> bool:
 
 async def fetch_all_papers(config: Config) -> list[Paper]:
     """Fetch papers from all sources and score them."""
+    return await fetch_all_papers_for_days(config, config.lookback_days)
+
+async def fetch_all_papers_for_days(config: Config, lookback_days: int) -> list[Paper]:
+    """Fetch papers from all sources for a given lookback and score them."""
     cache_key = (
-        config.lookback_days,
+        lookback_days,
         config.pubmed_enabled,
         config.biorxiv_enabled,
         config.arxiv_enabled,
@@ -366,11 +374,11 @@ async def fetch_all_papers(config: Config) -> list[Paper]:
         tasks = []
 
         if config.pubmed_enabled:
-            tasks.append(fetch_pubmed(config.lookback_days, client))
+            tasks.append(fetch_pubmed(lookback_days, client))
         if config.biorxiv_enabled:
-            tasks.append(fetch_biorxiv(config.lookback_days, client))
+            tasks.append(fetch_biorxiv(lookback_days, client))
         if config.arxiv_enabled:
-            tasks.append(fetch_arxiv(config.lookback_days, config.arxiv_categories, client))
+            tasks.append(fetch_arxiv(lookback_days, config.arxiv_categories, client))
 
         results = await asyncio.gather(*tasks, return_exceptions=True)
 
@@ -646,6 +654,14 @@ HTML_TEMPLATE = """
             margin-bottom: 0.75rem;
         }
 
+        .journal {
+            color: var(--text-secondary);
+            max-width: 260px;
+            white-space: nowrap;
+            overflow: hidden;
+            text-overflow: ellipsis;
+        }
+
         .source-badge {
             padding: 0.2rem 0.6rem;
             border-radius: 4px;
@@ -757,6 +773,11 @@ HTML_TEMPLATE = """
                 <option value="score" {% if sort == 'score' %}selected{% endif %}>Sort by relevance</option>
                 <option value="date" {% if sort == 'date' %}selected{% endif %}>Sort by date</option>
             </select>
+            <select name="days">
+                {% for d in other_lookback_options %}
+                <option value="{{ d }}" {% if days == d %}selected{% endif %}>Last {{ d }} days</option>
+                {% endfor %}
+            </select>
             <button type="submit">Apply Filters</button>
         </form>
 
@@ -774,6 +795,9 @@ HTML_TEMPLATE = """
                         </div>
                         <div class="paper-meta">
                             <span class="source-badge source-{{ paper.source }}">{{ paper.source }}</span>
+                            {% if paper.journal %}
+                            <span class="journal">{{ paper.journal }}</span>
+                            {% endif %}
                             <span class="authors">{{ paper.authors }}</span>
                             <span class="date">{{ paper.published_date }}</span>
                         </div>
@@ -806,6 +830,9 @@ HTML_TEMPLATE = """
                     </div>
                     <div class="paper-meta">
                         <span class="source-badge source-{{ paper.source }}">{{ paper.source }}</span>
+                        {% if paper.journal %}
+                        <span class="journal">{{ paper.journal }}</span>
+                        {% endif %}
                         <span class="authors">{{ paper.authors }}</span>
                         <span class="date">{{ paper.published_date }}</span>
                     </div>
@@ -849,9 +876,14 @@ async def index(
     area: str = Query(""),
     source: str = Query(""),
     sort: str = Query("score"),
+    days: int = Query(7),
 ):
     config = load_config()
-    papers = await fetch_all_papers(config)
+    if days not in config.other_lookback_options:
+        days = config.lookback_days
+
+    max_days = max(config.high_impact_lookback_days, days)
+    papers = await fetch_all_papers_for_days(config, max_days)
 
     # Filter by area
     if area:
@@ -867,8 +899,17 @@ async def index(
     else:
         papers.sort(key=lambda p: p.score, reverse=True)
 
-    high_impact_papers = [p for p in papers if is_high_impact(p, config)]
-    other_papers = [p for p in papers if not is_high_impact(p, config)]
+    today = date.today()
+    high_cutoff = today - timedelta(days=config.high_impact_lookback_days)
+    other_cutoff = today - timedelta(days=days)
+    high_impact_papers = [
+        p for p in papers
+        if is_high_impact(p, config) and p.published_date >= high_cutoff
+    ]
+    other_papers = [
+        p for p in papers
+        if (not is_high_impact(p, config)) and p.published_date >= other_cutoff
+    ]
 
     env = Environment(autoescape=select_autoescape(["html", "xml"]))
     template = env.from_string(HTML_TEMPLATE)
@@ -880,6 +921,8 @@ async def index(
         area=area,
         source=source,
         sort=sort,
+        days=days,
+        other_lookback_options=config.other_lookback_options,
     )
     return HTMLResponse(html)
 

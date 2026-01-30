@@ -12,6 +12,14 @@ sources:
 collection:
   lookback_days: 7
 
+high_impact_lookback_days: 90
+other_lookback_options:
+  - 7
+  - 14
+  - 30
+  - 60
+  - 90
+
 areas:
   metagenomics:
     terms:
